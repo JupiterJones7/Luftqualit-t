@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
-
+from database import load_data_from_database
 
 # 1. Pfade definieren
 BASE_DIR = Path(__file__).resolve().parent
@@ -254,7 +254,7 @@ def create_plot(df):
 
 # 7. Hauptprogramm
 def main():
-    df = load_data(DATA_FILE)
+    df = load_data_from_database()
 
     df = clean_data(df)
 
