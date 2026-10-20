@@ -1,7 +1,11 @@
 import collector
 import math
 import sqlite3
+import os
+import uuid
 
+import psycopg
+import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -242,6 +246,46 @@ def test_old_measurement_is_not_set_online_by_python_logic():
     assert "Keine aktuellen Messdaten" in params
 
 
+def test_measurement_just_within_offline_limit_is_not_marked_offline():
+    connection = MagicMock()
+    recent_timestamp = (
+        datetime.now(timezone.utc)
+        - timedelta(minutes=collector.OFFLINE_AFTER_MINUTES)
+        + timedelta(seconds=5)
+    )
+
+    collector.update_device_status(
+        connection,
+        device_id=1,
+        status="online",
+        last_seen=recent_timestamp,
+    )
+
+    args = connection.cursor.return_value.__enter__.return_value.execute.call_args
+    params = args.args[1]
+
+    assert "online" in params
+    assert "Keine aktuellen Messdaten" not in params
+
+
+def test_recent_measurement_can_restore_online_status():
+    connection = MagicMock()
+    recent_timestamp = datetime.now(timezone.utc)
+
+    collector.update_device_status(
+        connection,
+        device_id=1,
+        status="online",
+        last_seen=recent_timestamp,
+    )
+
+    args = connection.cursor.return_value.__enter__.return_value.execute.call_args
+    params = args.args[1]
+
+    assert "online" in params
+    assert recent_timestamp in params
+
+
 def test_missing_timestamp_sets_unknown_status():
     connection = MagicMock()
 
@@ -291,3 +335,92 @@ def test_stale_invalid_cycle_preserves_recent_online_status():
         collector.OFFLINE_AFTER_MINUTES,
         collector.OFFLINE_AFTER_MINUTES,
     )
+
+def test_recent_online_status_survives_invalid_measurement():
+    database_url = os.getenv("AIR_QUALITY_TEST_DATABASE_URL")
+
+    if not database_url:
+        pytest.skip("Keine PostgreSQL-Testdatenbank konfiguriert.")
+
+    with psycopg.connect(
+        database_url,
+        connect_timeout=5,
+    ) as connection:
+        with connection.cursor() as cursor:
+            # Sicherheitsprüfung: niemals die Produktivdatenbank testen.
+            cursor.execute("SELECT current_database()")
+            database_name = cursor.fetchone()[0]
+
+            assert database_name == "air_quality_test", (
+                "Falsche Datenbank! Der Integrationstest wurde abgebrochen."
+            )
+
+            device_uid = f"pytest-status-{uuid.uuid4()}"
+            cursor.execute(
+                """
+                INSERT INTO devices (device_uid, name)
+                VALUES (%s, %s)
+                RETURNING id
+                """,
+                (device_uid, "Integrationstest"),
+            )
+            device_id = cursor.fetchone()[0]
+
+        # 1. Eine aktuelle gültige Messung setzt das Gerät auf online.
+        recent_timestamp = datetime.now(timezone.utc)
+
+        collector.update_device_status(
+            connection,
+            device_id=device_id,
+            status="online",
+            last_seen=recent_timestamp,
+        )
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, last_seen
+                FROM device_status
+                WHERE device_id = %s
+                """,
+                (device_id,),
+            )
+            status, last_seen = cursor.fetchone()
+
+        assert status == "online"
+        assert last_seen is not None
+
+        # 2. Eine ungültige Messung ohne Zeitstempel wird verarbeitet.
+        collector.update_device_status(
+            connection,
+            device_id=device_id,
+            status="warning",
+            last_seen=None,
+            last_error="Ungültige Messwerte",
+        )
+
+        # 3. Der bestehende Online-Status muss erhalten bleiben.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, last_seen
+                FROM device_status
+                WHERE device_id = %s
+                """,
+                (device_id,),
+            )
+            status, last_seen = cursor.fetchone()
+
+        assert status == "online"
+        assert last_seen is not None
+
+        # Testdaten bei Erfolg entfernen.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM device_status WHERE device_id = %s",
+                (device_id,),
+            )
+            cursor.execute(
+                "DELETE FROM devices WHERE id = %s",
+                (device_id,),
+            )

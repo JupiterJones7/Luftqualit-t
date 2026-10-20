@@ -314,31 +314,31 @@ def update_device_status(
                     )
                 END,
                 status = CASE
-                    WHEN EXCLUDED.last_seen IS NOT NULL
-                        AND EXCLUDED.last_seen
-                            >= NOW() - (%s * INTERVAL '1 minute')
-                        AND EXCLUDED.last_seen <= NOW()
-                        AND EXCLUDED.status = 'online'
-                        THEN 'online'
-                    WHEN device_status.last_seen IS NOT NULL
-                        AND device_status.last_seen
-                            >= NOW() - (%s * INTERVAL '1 minute')
-                        AND device_status.last_seen <= NOW()
-                        AND device_status.status = 'online'
-                        THEN 'online'
-                    ELSE EXCLUDED.status
-                END,
+                WHEN EXCLUDED.last_seen IS NOT NULL
+                    AND EXCLUDED.last_seen
+                        >= clock_timestamp() - (%s * INTERVAL '1 minute')
+                    AND EXCLUDED.last_seen <= clock_timestamp()
+                    AND EXCLUDED.status = 'online'
+                    THEN 'online'
+                 WHEN device_status.last_seen IS NOT NULL
+                    AND device_status.last_seen
+                        >= clock_timestamp() - (%s * INTERVAL '1 minute')
+                    AND device_status.last_seen <= clock_timestamp()
+                    AND device_status.status = 'online'
+                    THEN 'online'
+                ELSE EXCLUDED.status
+                    END,
                 last_error = CASE
                     WHEN EXCLUDED.last_seen IS NOT NULL
                         AND EXCLUDED.last_seen
-                            >= NOW() - (%s * INTERVAL '1 minute')
-                        AND EXCLUDED.last_seen <= NOW()
+                            >= clock_timestamp() - (%s * INTERVAL '1 minute')
+                        AND EXCLUDED.last_seen <= clock_timestamp()
                         AND EXCLUDED.status = 'online'
                         THEN NULL
                     WHEN device_status.last_seen IS NOT NULL
                         AND device_status.last_seen
-                            >= NOW() - (%s * INTERVAL '1 minute')
-                        AND device_status.last_seen <= NOW()
+                            >= clock_timestamp() - (%s * INTERVAL '1 minute')
+                        AND EXCLUDED.last_seen <= clock_timestamp()
                         AND device_status.status = 'online'
                         THEN device_status.last_error
                     ELSE EXCLUDED.last_error
