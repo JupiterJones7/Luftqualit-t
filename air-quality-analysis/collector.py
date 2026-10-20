@@ -4,6 +4,7 @@ import os
 import random
 import sqlite3
 import time
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -69,17 +70,64 @@ def generate_measurements(model):
     return values
 
 
-def validate_measurements(values):
-    """Prüft Messwerte auf Zahlen und plausible Grenzbereiche."""
+
+def validate_measurements(values, model=None):
+    """Prüft Messwerte auf Vollständigkeit und Plausibilität."""
 
     errors = []
 
+    required_measurements = {
+        "SEN66": {
+            "pm1_mass",
+            "pm25_mass",
+            "pm4_mass",
+            "pm10_mass",
+            "pm05_number",
+            "pm1_number",
+            "pm25_number",
+            "pm4_number",
+            "pm10_number",
+            "co2",
+            "temperature",
+            "humidity",
+            "voc_index",
+            "nox_index",
+        },
+        "SEN69C": {
+            "pm1_mass",
+            "pm25_mass",
+            "pm4_mass",
+            "pm10_mass",
+            "pm05_number",
+            "pm1_number",
+            "pm25_number",
+            "pm4_number",
+            "pm10_number",
+            "co2",
+            "formaldehyde",
+            "temperature",
+            "humidity",
+            "voc_index",
+            "nox_index",
+        },
+    }
+
+    # Prüfen, ob erwartete Messgrössen fehlen.
+    if model in required_measurements:
+        missing = required_measurements[model] - values.keys()
+
+        for code in sorted(missing):
+            errors.append(f"Messgrösse fehlt: {code}")
+
+    # Unbekannte Modelle nicht stillschweigend akzeptieren.
+    elif model is not None:
+        errors.append(f"Unbekanntes Sensormodell: {model}")
+
+    # Alle vorhandenen Werte prüfen.
     for code, value in values.items():
         if code not in LIMITS:
             errors.append(f"Unbekannte Messgrösse: {code}")
             continue
-
-        minimum, maximum = LIMITS[code]
 
         if (
             isinstance(value, bool)
@@ -88,11 +136,18 @@ def validate_measurements(values):
             errors.append(f"Messwert ist keine Zahl: {code}")
             continue
 
-        if not (
-            minimum <= value
-            and (maximum is None or value <= maximum)
+        if not math.isfinite(value):
+            errors.append(f"Messwert ist nicht endlich: {code}")
+            continue
+
+        minimum, maximum = LIMITS[code]
+
+        if value < minimum or (
+            maximum is not None and value > maximum
         ):
-            errors.append(f"{code} ausserhalb des Prüfbereichs")
+            errors.append(
+                f"{code} ausserhalb des Prüfbereichs: {value}"
+            )
 
     return errors
 
@@ -458,7 +513,7 @@ def main():
 
         for model in ("SEN66", "SEN69C"):
             values = generate_measurements(model)
-            errors = validate_measurements(values)
+            errors = validate_measurements(values, model)
 
             enqueue_measurement(
                 timestamp,

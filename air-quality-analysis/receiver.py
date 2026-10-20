@@ -1,0 +1,108 @@
+
+import os
+import secrets
+from datetime import datetime, timezone
+from urllib import request
+
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+
+load_dotenv()
+
+API_KEY = os.getenv("INGEST_API_KEY")
+
+app = FastAPI(title="Air Quality Receiver")
+
+@app.middleware("http")
+async def log_all_requests(request, call_next):
+    print("\n" + "=" * 60, flush=True)
+    print(f"Anfrage: {request.method} {request.url.path}", flush=True)
+    print(f"Client: {request.client.host if request.client else 'unbekannt'}", flush=True)
+    
+
+    try:
+        print(f"Anfrage: {request.method} {request.url.path}", flush=True)
+        print(f"Client: {request.client.host if request.client else 'unbekannt'}", flush=True)
+        response = await call_next(request)
+        print(f"HTTP-Status: {response.status_code}", flush=True)
+        return response
+    except Exception as exc:
+        print(f"Fehler bei der Verarbeitung: {exc}", flush=True)
+        raise
+    finally:
+        print("=" * 60, flush=True)
+
+
+
+class MeasurementMessage(BaseModel):
+    device_uid: str
+    sensor_model: str
+    measured_at: datetime
+    measurements: dict[str, float]
+    message_id: str = Field(min_length=1, max_length=100)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/measurements")
+def receive_measurements(
+    message: MeasurementMessage,
+    x_api_key: str | None = Header(default=None),
+):
+    if not API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="INGEST_API_KEY ist nicht konfiguriert.",
+        )
+
+    if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(status_code=401, detail="Ungültiger API-Schlüssel")
+
+    if message.sensor_model not in {"SEN66", "SEN69C"}:
+        raise HTTPException(status_code=422, detail="Unbekanntes Sensormodell")
+
+    if message.measured_at.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail="measured_at muss eine Zeitzone enthalten",
+        )
+
+    if not message.measurements:
+        raise HTTPException(status_code=422, detail="Keine Messwerte enthalten")
+
+    for code, value in message.measurements.items():
+        if not isinstance(code, str) or not code:
+            raise HTTPException(status_code=422, detail="Ungültiger Messwertname")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise HTTPException(status_code=422, detail=f"Ungültiger Wert: {code}")
+        if not __import__("math").isfinite(value):
+            raise HTTPException(status_code=422, detail=f"Nicht endlicher Wert: {code}")
+
+        print("\n" + "=" * 50, flush=True)
+    print("Neue Messdaten empfangen", flush=True)
+    print(f"Gerät:         {message.device_uid}", flush=True)
+    print(f"Sensor:        {message.sensor_model}", flush=True)
+    print(f"Zeitpunkt:     {message.measured_at.isoformat()}", flush=True)
+    print(f"Nachrichten-ID: {message.message_id}", flush=True)
+    print("Messwerte:", flush=True)
+    
+
+    for code, value in message.measurements.items():
+        print(f"  {code}: {value}", flush=True)
+
+    print("=" * 50, flush=True)
+
+    return {
+        "status": "received",
+        "message_id": message.message_id,
+        "measurement_count": len(message.measurements),
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

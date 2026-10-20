@@ -1,11 +1,17 @@
 
+import os
 
 import pandas as pd
 import plotly.express as px
+import psycopg
 import streamlit as st
+from dotenv import load_dotenv
+from streamlit_autorefresh import st_autorefresh
 
 from database import load_data_from_database
 
+
+load_dotenv()
 
 st.set_page_config(
     page_title="Luftqualitäts-Dashboard",
@@ -13,11 +19,21 @@ st.set_page_config(
     layout="wide",
 )
 
+# Dashboard alle 10 Sekunden aktualisieren
+st_autorefresh(
+    interval=10_000,
+    limit=None,
+    key="dashboard_refresh",
+)
+
 st.title("Luftqualitäts-Dashboard")
 st.caption("Überblick über deine gespeicherten Raumluftmessungen")
 
 
-# Messgrössen und ihre Darstellung im Dashboard.
+# --------------------------------------------------
+# Messgrössen und Darstellung
+# --------------------------------------------------
+
 MEASUREMENT_GROUPS = {
     "Partikel-Massenkonzentration": [
         ("pm1_mass", "PM1.0", "µg/m³"),
@@ -45,22 +61,161 @@ MEASUREMENT_GROUPS = {
 }
 
 
+# --------------------------------------------------
+# Datenbankfunktionen
+# --------------------------------------------------
+
 @st.cache_data(ttl=60)
 def load_measurements():
+    """Messdaten für maximal 60 Sekunden zwischenspeichern."""
     return load_data_from_database()
 
 
-# Datenbankverbindung
+def load_device_status():
+    """Gerätestatus bei jedem Aufruf direkt aus PostgreSQL lesen."""
+    database_url = os.getenv("DATABASE_URL")
+
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL fehlt in der .env-Datei."
+        )
+
+    query = """
+        SELECT
+            d.device_uid,
+            d.name,
+            d.location,
+            ds.status,
+            ds.last_seen,
+            ds.last_error,
+            ds.updated_at
+        FROM devices AS d
+        LEFT JOIN device_status AS ds
+            ON d.id = ds.device_id
+        WHERE d.active = TRUE
+        ORDER BY d.name;
+    """
+
+    with psycopg.connect(
+        database_url,
+        connect_timeout=5,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            rows = cursor.fetchall()
+
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "device_uid",
+            "name",
+            "location",
+            "status",
+            "last_seen",
+            "last_error",
+            "updated_at",
+        ],
+    )
+
+
+# --------------------------------------------------
+# Gerätestatus
+# --------------------------------------------------
+
+st.subheader("Gerätestatus")
+
+try:
+    devices = load_device_status()
+
+    if devices.empty:
+        st.info("Keine aktiven Geräte registriert.")
+
+    else:
+        for _, device in devices.iterrows():
+            status = device["status"] or "unbekannt"
+
+            if status == "online":
+                st.success(
+                    f"🟢 **{device['name']}** – Online"
+                )
+            elif status == "offline":
+                st.error(
+                    f"🔴 **{device['name']}** – Offline"
+                )
+            elif status == "warning":
+                st.warning(
+                    f"🟠 **{device['name']}** – Warnung"
+                )
+            else:
+                st.info(
+                    f"⚪ **{device['name']}** – {status}"
+                )
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.caption(
+                    f"Geräte-ID: {device['device_uid']}"
+                )
+                st.caption(
+                    f"Standort: {device['location'] or 'Nicht festgelegt'}"
+                )
+
+            with col2:
+                last_seen = device["last_seen"]
+
+                if pd.notna(last_seen):
+                    st.caption(
+                        "Letzter Kontakt: "
+                        f"{last_seen.strftime('%d.%m.%Y %H:%M:%S')}"
+                    )
+                else:
+                    st.caption("Noch kein Kontakt registriert.")
+
+                updated_at = device["updated_at"]
+
+                if pd.notna(updated_at):
+                    st.caption(
+                        "Status aktualisiert: "
+                        f"{updated_at.strftime('%d.%m.%Y %H:%M:%S')}"
+                    )
+
+            with col3:
+                if device["last_error"]:
+                    st.caption(
+                        f"Letzter Fehler: {device['last_error']}"
+                    )
+                else:
+                    st.caption("Keine Fehlermeldung hinterlegt.")
+
+            st.divider()
+
+except Exception as exc:
+    st.warning(
+        "Der Gerätestatus konnte nicht geladen werden."
+    )
+
+    with st.expander("Technische Fehlermeldung"):
+        st.code(str(exc))
+
+
+# --------------------------------------------------
+# Messdaten laden
+# --------------------------------------------------
+
 try:
     df = load_measurements()
+
 except Exception as exc:
     st.error("Die Messdaten konnten nicht geladen werden.")
     st.info(
         "Prüfe die DATABASE_URL in deiner .env-Datei "
         "und die Verbindung zu air_quality_v2."
     )
+
     with st.expander("Technische Fehlermeldung"):
         st.code(str(exc))
+
     st.stop()
 
 
@@ -70,26 +225,35 @@ if df.empty:
         "Die Datenbank ist erreichbar, enthält aber "
         "noch keine gespeicherten Messungen."
     )
+
     st.info(
         "Sobald dein ESP32 Messwerte sendet oder du "
         "Testdaten importierst, erscheinen diese hier."
     )
+
     st.caption(
-        f"Registrierte Messgrössen werden in der Datenbank "
+        "Registrierte Messgrössen werden in der Datenbank "
         "verwaltet. Dieses Dashboard zeigt Messwerte an, "
         "sobald sie tatsächlich gespeichert wurden."
     )
+
     if st.button("Datenbank erneut prüfen"):
         st.cache_data.clear()
         st.rerun()
+
     st.stop()
 
 
+# --------------------------------------------------
 # Daten vorbereiten
+# --------------------------------------------------
+
 df = df.copy()
 
 if "timestamp" not in df.columns:
-    st.error("Die geladenen Daten enthalten keine Zeitstempel.")
+    st.error(
+        "Die geladenen Daten enthalten keine Zeitstempel."
+    )
     st.stop()
 
 df["timestamp"] = pd.to_datetime(
@@ -108,16 +272,24 @@ measurement_definitions = [
 
 for code, _, _ in measurement_definitions:
     if code in df.columns:
-        df[code] = pd.to_numeric(df[code], errors="coerce")
+        df[code] = pd.to_numeric(
+            df[code],
+            errors="coerce",
+        )
 
 if df.empty:
-    st.warning("Es sind keine gültigen Messzeitpunkte vorhanden.")
+    st.warning(
+        "Es sind keine gültigen Messzeitpunkte vorhanden."
+    )
     st.stop()
 
 df = df.sort_values("timestamp")
 
 
+# --------------------------------------------------
 # Sensorfilter
+# --------------------------------------------------
+
 st.subheader("Filter")
 
 filter_col1, filter_col2 = st.columns(2)
@@ -126,21 +298,34 @@ if "sensor_name" in df.columns:
     sensor_options = sorted(
         df["sensor_name"].dropna().unique().tolist()
     )
+
     selected_sensors = filter_col1.multiselect(
         "Sensor auswählen",
         options=sensor_options,
         default=sensor_options,
     )
-    df = df[df["sensor_name"].isin(selected_sensors)]
+
+    df = df[
+        df["sensor_name"].isin(selected_sensors)
+    ]
+
 else:
-    filter_col1.info("Keine Sensorinformationen verfügbar.")
+    filter_col1.info(
+        "Keine Sensorinformationen verfügbar."
+    )
+
 
 if df.empty:
-    st.warning("Für die ausgewählten Sensoren gibt es keine Daten.")
+    st.warning(
+        "Für die ausgewählten Sensoren gibt es keine Daten."
+    )
     st.stop()
 
 
+# --------------------------------------------------
 # Zeitraumfilter
+# --------------------------------------------------
+
 minimum_date = df["timestamp"].min().date()
 maximum_date = df["timestamp"].max().date()
 
@@ -151,18 +336,28 @@ selected_dates = filter_col2.date_input(
     max_value=maximum_date,
 )
 
-if not isinstance(selected_dates, (tuple, list)) or len(selected_dates) != 2:
-    st.info("Bitte wähle einen Start- und Endzeitpunkt aus.")
+if (
+    not isinstance(selected_dates, (tuple, list))
+    or len(selected_dates) != 2
+):
+    st.info(
+        "Bitte wähle einen Start- und Endzeitpunkt aus."
+    )
     st.stop()
 
 start_date, end_date = selected_dates
 
 if start_date > end_date:
-    st.error("Das Startdatum darf nicht nach dem Enddatum liegen.")
+    st.error(
+        "Das Startdatum darf nicht nach dem Enddatum liegen."
+    )
     st.stop()
 
 start = pd.Timestamp(start_date, tz="UTC")
-end = pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1)
+end = (
+    pd.Timestamp(end_date, tz="UTC")
+    + pd.Timedelta(days=1)
+)
 
 filtered = df[
     (df["timestamp"] >= start)
@@ -170,31 +365,46 @@ filtered = df[
 ].copy()
 
 if filtered.empty:
-    st.warning("Im ausgewählten Zeitraum gibt es keine Messwerte.")
+    st.warning(
+        "Im ausgewählten Zeitraum gibt es keine Messwerte."
+    )
     st.stop()
 
 
+# --------------------------------------------------
 # Allgemeine Informationen
+# --------------------------------------------------
+
 st.subheader("Übersicht")
 
 info1, info2, info3 = st.columns(3)
 
-info1.metric("Messzeitpunkte", len(filtered))
+info1.metric(
+    "Messzeitpunkte",
+    len(filtered),
+)
+
 info2.metric(
     "Sensoren",
     filtered["sensor_id"].nunique()
     if "sensor_id" in filtered.columns
     else "Unbekannt",
 )
+
 info3.metric(
     "Letzte gespeicherte Messung",
-    filtered["timestamp"].max().strftime("%d.%m.%Y %H:%M UTC"),
+    filtered["timestamp"].max().strftime(
+        "%d.%m.%Y %H:%M UTC"
+    ),
 )
 
 st.divider()
 
 
+# --------------------------------------------------
 # Aktuelle Messwerte
+# --------------------------------------------------
+
 st.subheader("Aktuelle Messwerte")
 
 available_groups = {}
@@ -205,22 +415,35 @@ for group_name, measurements in MEASUREMENT_GROUPS.items():
         for code, label, unit in measurements
         if code in filtered.columns
     ]
+
     if available:
         available_groups[group_name] = available
+
 
 if not available_groups:
     st.warning(
         "Die Daten enthalten keine der erwarteten Messgrössen. "
         "Prüfe die Spaltennamen in database.py."
     )
+
 else:
     for group_name, measurements in available_groups.items():
         st.markdown(f"**{group_name}**")
-        metric_columns = st.columns(min(4, len(measurements)))
 
-        for index, (code, label, unit) in enumerate(measurements):
-            valid_values = filtered[["timestamp", code]].dropna()
-            column = metric_columns[index % len(metric_columns)]
+        metric_columns = st.columns(
+            min(4, len(measurements))
+        )
+
+        for index, (code, label, unit) in enumerate(
+            measurements
+        ):
+            valid_values = filtered[
+                ["timestamp", code]
+            ].dropna()
+
+            column = metric_columns[
+                index % len(metric_columns)
+            ]
 
             if valid_values.empty:
                 column.metric(label, "Keine Daten")
@@ -229,6 +452,7 @@ else:
             latest_row = valid_values.loc[
                 valid_values["timestamp"].idxmax()
             ]
+
             value = latest_row[code]
 
             if unit == "°C":
@@ -254,19 +478,27 @@ else:
 st.divider()
 
 
+# --------------------------------------------------
 # Interaktive Diagramme
+# --------------------------------------------------
+
 st.subheader("Messwertverlauf")
 
 for group_name, measurements in available_groups.items():
     with st.expander(group_name, expanded=True):
+
         for code, label, unit in measurements:
             if code not in filtered.columns:
                 continue
 
-            chart_df = filtered.dropna(subset=[code]).copy()
+            chart_df = filtered.dropna(
+                subset=[code]
+            ).copy()
 
             if chart_df.empty:
-                st.info(f"Noch keine Messwerte für {label} vorhanden.")
+                st.info(
+                    f"Noch keine Messwerte für {label} vorhanden."
+                )
                 continue
 
             st.markdown(f"**{label}**")
@@ -292,28 +524,41 @@ for group_name, measurements in available_groups.items():
                 hovermode="x unified",
                 xaxis_title="Zeitpunkt",
                 yaxis_title=f"{label} ({unit})",
-                margin=dict(l=20, r=20, t=20, b=20),
+                margin=dict(
+                    l=20,
+                    r=20,
+                    t=20,
+                    b=20,
+                ),
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+            )
 
 
+# --------------------------------------------------
 # Messhistorie
+# --------------------------------------------------
+
 st.divider()
 st.subheader("Messhistorie")
 
 history_columns = [
     column
-    for column in [
-        "timestamp",
-        "sensor_name",
-        "sensor_model",
-    ]
-    + [
-        code
-        for code, _, _ in measurement_definitions
-        if code in filtered.columns
-    ]
+    for column in (
+        [
+            "timestamp",
+            "sensor_name",
+            "sensor_model",
+        ]
+        + [
+            code
+            for code, _, _ in measurement_definitions
+            if code in filtered.columns
+        ]
+    )
     if column in filtered.columns
 ]
 
@@ -328,7 +573,11 @@ st.dataframe(
     hide_index=True,
 )
 
+
+# --------------------------------------------------
 # Manuelles Aktualisieren
+# --------------------------------------------------
+
 if st.button("Messdaten aktualisieren"):
     st.cache_data.clear()
     st.rerun()
