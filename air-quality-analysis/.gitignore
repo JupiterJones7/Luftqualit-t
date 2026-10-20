@@ -12,6 +12,7 @@ dist/
 
 venv/
 .venv/
+**/.venv/
 env/
 
 .pytest_cache/
@@ -19,7 +20,9 @@ env/
 .ruff_cache/
 .coverage
 htmlcov/
-
+*.sqlite
+*.sqlite3
+*.db
 .vscode/
 .idea/
 .DS_Store
@@ -29,3 +32,4 @@ Thumbs.db
 
 data/*.sqlite3
 output/
+**/output/

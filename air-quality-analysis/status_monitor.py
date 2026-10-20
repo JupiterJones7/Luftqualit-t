@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-OFFLINE_AFTER_MINUTES = 1
+OFFLINE_AFTER_MINUTES = 3
 CHECK_INTERVAL_SECONDS = 60
 
 

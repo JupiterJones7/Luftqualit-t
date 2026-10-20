@@ -1,6 +1,1 @@
-timestamp,co2_ppm,temperature_c,humidity_pct,source_row,error_reason
-2026-10-15 09:35:00,,21.3,44.8,24,Fehlender oder ungültiger Wert: co2_ppm
-2026-10-15 11:40:00,-50.0,21.8,44.9,49,CO2 ausserhalb des Prüfbereichs
-,742.0,22.2,43.2,70,Fehlender oder ungültiger Zeitstempel
-2026-10-15 15:15:00,908.0,22.5,43.0,93,Doppelter Zeitstempel
-2026-10-15 16:50:00,710.0,22.8,140.0,112,Luftfeuchtigkeit ausserhalb des Prüfbereichs
+timestamp,sensor_id,sensor_name,sensor_model,co2,formaldehyde,humidity,nox_index,pm05_number,pm10_mass,pm10_number,pm1_mass,pm1_number,pm25_mass,pm25_number,pm4_mass,pm4_number,temperature,voc_index,error_reason

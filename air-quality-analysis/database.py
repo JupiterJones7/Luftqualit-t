@@ -80,5 +80,5 @@ def load_data_from_database():
         f"{len(measurements.columns) - len(IDENTIFIER_COLUMNS)} "
         "verschiedene Messgrössen-Spalten verfügbar."
     )
-
+    
     return measurements

@@ -152,6 +152,7 @@ def validate_measurements(values, model=None):
     return errors
 
 
+
 def init_queue():
     """Erstellt oder erweitert die lokale SQLite-Warteschlange."""
 
@@ -164,7 +165,8 @@ def init_queue():
                 timestamp TEXT NOT NULL,
                 values_json TEXT NOT NULL,
                 errors_json TEXT NOT NULL,
-                sensor_model TEXT NOT NULL DEFAULT 'SEN66'
+                sensor_model TEXT NOT NULL DEFAULT 'SEN66',
+                device_uid TEXT
             )
         """)
 
@@ -181,8 +183,22 @@ def init_queue():
                 ADD COLUMN sensor_model TEXT NOT NULL DEFAULT 'SEN66'
             """)
 
+        if "device_uid" not in columns:
+            connection.execute("""
+                ALTER TABLE pending_measurements
+                ADD COLUMN device_uid TEXT
+            """)
 
-def enqueue_measurement(timestamp, model, values, errors):
+
+
+
+def enqueue_measurement(
+    timestamp,
+    model,
+    values,
+    errors,
+    device_uid=None,
+):
     """Speichert einen Messzyklus lokal."""
 
     with sqlite3.connect(QUEUE_FILE) as connection:
@@ -191,18 +207,22 @@ def enqueue_measurement(timestamp, model, values, errors):
                 timestamp,
                 values_json,
                 errors_json,
-                sensor_model
+                sensor_model,
+                device_uid
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
         """, (
             timestamp.isoformat(),
             json.dumps(values, allow_nan=False),
             json.dumps(errors),
             model,
+            device_uid,
         ))
 
 
-def get_database_config(connection, model):
+
+
+def get_database_config(connection, device_uid, model):
     """Liest Sensor-ID, Geräte-ID und Messgrössen-IDs."""
 
     with connection.cursor() as cursor:
@@ -210,18 +230,20 @@ def get_database_config(connection, model):
             SELECT s.id, s.device_id
             FROM sensors AS s
             JOIN devices AS d ON d.id = s.device_id
-            WHERE s.model = %s
+            WHERE d.device_uid = %s
+              AND s.model = %s
               AND s.active = TRUE
               AND d.active = TRUE
             ORDER BY s.id
             LIMIT 1
-        """, (model,))
+        """, (device_uid, model))
 
         sensor = cursor.fetchone()
 
         if sensor is None:
             raise ValueError(
-                f"Kein aktiver Sensor mit Modell {model} gefunden."
+                f"Kein aktiver Sensor mit Modell {model} "
+                f"für Gerät {device_uid} gefunden."
             )
 
         sensor_id, device_id = sensor
@@ -239,6 +261,7 @@ def get_database_config(connection, model):
     return sensor_id, device_id, type_ids
 
 
+
 def update_device_status(
     connection,
     device_id,
@@ -246,10 +269,28 @@ def update_device_status(
     last_seen,
     last_error=None,
 ):
-    """Aktualisiert den Gerätestatus und den letzten Messzeitpunkt."""
+    """Aktualisiert Gerätestatus und letzten Messzeitpunkt."""
 
     now = datetime.now(timezone.utc)
 
+    # Nur aktuelle Messungen dürfen das Gerät auf online setzen.
+    if status == "online":
+        if last_seen is None:
+            status = "unknown"
+            last_error = "Kein Messzeitpunkt vorhanden."
+        else:
+            age_seconds = (
+                now - last_seen.astimezone(timezone.utc)
+            ).total_seconds()
+
+            if (
+                age_seconds < 0
+                or age_seconds > OFFLINE_AFTER_MINUTES * 60
+            ):
+                status = "offline"
+                last_error = "Keine aktuellen Messdaten"
+
+    # Wichtig: Dieser Block muss außerhalb von if status == "online" liegen.
     with connection.cursor() as cursor:
         cursor.execute("""
             INSERT INTO device_status (
@@ -272,8 +313,36 @@ def update_device_status(
                         EXCLUDED.last_seen
                     )
                 END,
-                status = EXCLUDED.status,
-                last_error = EXCLUDED.last_error,
+                status = CASE
+                    WHEN EXCLUDED.last_seen IS NOT NULL
+                        AND EXCLUDED.last_seen
+                            >= NOW() - (%s * INTERVAL '1 minute')
+                        AND EXCLUDED.last_seen <= NOW()
+                        AND EXCLUDED.status = 'online'
+                        THEN 'online'
+                    WHEN device_status.last_seen IS NOT NULL
+                        AND device_status.last_seen
+                            >= NOW() - (%s * INTERVAL '1 minute')
+                        AND device_status.last_seen <= NOW()
+                        AND device_status.status = 'online'
+                        THEN 'online'
+                    ELSE EXCLUDED.status
+                END,
+                last_error = CASE
+                    WHEN EXCLUDED.last_seen IS NOT NULL
+                        AND EXCLUDED.last_seen
+                            >= NOW() - (%s * INTERVAL '1 minute')
+                        AND EXCLUDED.last_seen <= NOW()
+                        AND EXCLUDED.status = 'online'
+                        THEN NULL
+                    WHEN device_status.last_seen IS NOT NULL
+                        AND device_status.last_seen
+                            >= NOW() - (%s * INTERVAL '1 minute')
+                        AND device_status.last_seen <= NOW()
+                        AND device_status.status = 'online'
+                        THEN device_status.last_error
+                    ELSE EXCLUDED.last_error
+                END,
                 updated_at = EXCLUDED.updated_at
         """, (
             device_id,
@@ -281,7 +350,12 @@ def update_device_status(
             status,
             last_error,
             now,
+            OFFLINE_AFTER_MINUTES,
+            OFFLINE_AFTER_MINUTES,
+            OFFLINE_AFTER_MINUTES,
+            OFFLINE_AFTER_MINUTES,
         ))
+
 
 
 def save_rejected(
@@ -291,10 +365,11 @@ def save_rejected(
     model,
     values,
     errors,
+    device_uid,
 ):
     """Protokolliert einen ungültigen Messzyklus."""
 
-    source_id = f"collector:{model}:{timestamp}"
+    source_id = f"collector:{device_uid}:{model}:{timestamp}"
 
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -310,12 +385,14 @@ def save_rejected(
             sensor_id,
             Jsonb({
                 "timestamp": timestamp,
+                "device_uid": device_uid,
                 "sensor_model": model,
                 "values": values,
             }),
             "; ".join(errors),
             source_id,
         ))
+
 
 
 def save_valid(
@@ -380,7 +457,8 @@ def deliver_pending():
                     timestamp,
                     values_json,
                     errors_json,
-                    sensor_model
+                    sensor_model,
+                    device_uid
                 FROM pending_measurements
                 ORDER BY id
                 LIMIT 1
@@ -389,10 +467,36 @@ def deliver_pending():
         if row is None:
             return
 
-        values = json.loads(row["values_json"])
-        errors = json.loads(row["errors_json"])
-        model = row["sensor_model"]
-        measured_at = datetime.fromisoformat(row["timestamp"])
+            
+    
+        try:
+            values = json.loads(row["values_json"])
+            errors = json.loads(row["errors_json"])
+            model = row["sensor_model"]
+            device_uid = row["device_uid"]
+            measured_at = datetime.fromisoformat(row["timestamp"])
+
+            if not isinstance(values, dict):
+                raise ValueError(
+                    "values_json muss ein JSON-Objekt sein."
+                )
+
+            if not isinstance(errors, list):
+                raise ValueError(
+                    "errors_json muss eine JSON-Liste sein."
+                )
+
+        except (ValueError, TypeError) as error:
+            print(
+                f"Ungültiger Queue-Eintrag {row['id']}: {error}"
+            )
+            print(
+                "Eintrag bleibt zur manuellen Prüfung "
+                "in der Warteschlange."
+            )
+            return
+
+
 
         try:
             with psycopg.connect(
@@ -400,8 +504,17 @@ def deliver_pending():
                 connect_timeout=5,
             ) as connection:
 
-                sensor_id, device_id, type_ids = (
-                    get_database_config(connection, model)
+                
+                if not device_uid:
+                    raise ValueError(
+                        "Wartender Messdatensatz hat keine device_uid. "
+                        "Bitte den Eintrag prüfen, bevor er übertragen wird."
+                    )
+
+                sensor_id, device_id, type_ids = get_database_config(
+                    connection,
+                    device_uid,
+                    model,
                 )
 
                 if errors:
@@ -412,6 +525,7 @@ def deliver_pending():
                         model,
                         values,
                         errors,
+                        device_uid,
                     )
 
                     # Ungültige Daten aktualisieren nicht last_seen.
@@ -511,7 +625,10 @@ def main():
     while True:
         timestamp = datetime.now(timezone.utc)
 
-        for model in ("SEN66", "SEN69C"):
+        for model, device_uid in (
+            ("SEN66", "SIM-SEN66-001"),
+            ("SEN69C", "SIM-SEN69C-001"),
+        ):
             values = generate_measurements(model)
             errors = validate_measurements(values, model)
 
@@ -520,6 +637,7 @@ def main():
                 model,
                 values,
                 errors,
+                device_uid=device_uid,
             )
 
             if errors:
