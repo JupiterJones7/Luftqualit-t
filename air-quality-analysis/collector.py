@@ -71,68 +71,25 @@ def generate_measurements(model):
 
 
 
+
 def validate_measurements(values, model=None):
-    """Prüft Messwerte auf Vollständigkeit und Plausibilität."""
+    """Prüft vorhandene Messwerte auf Plausibilität."""
 
     errors = []
 
-    required_measurements = {
-        "SEN66": {
-            "pm1_mass",
-            "pm25_mass",
-            "pm4_mass",
-            "pm10_mass",
-            "pm05_number",
-            "pm1_number",
-            "pm25_number",
-            "pm4_number",
-            "pm10_number",
-            "co2",
-            "temperature",
-            "humidity",
-            "voc_index",
-            "nox_index",
-        },
-        "SEN69C": {
-            "pm1_mass",
-            "pm25_mass",
-            "pm4_mass",
-            "pm10_mass",
-            "pm05_number",
-            "pm1_number",
-            "pm25_number",
-            "pm4_number",
-            "pm10_number",
-            "co2",
-            "formaldehyde",
-            "temperature",
-            "humidity",
-            "voc_index",
-            "nox_index",
-        },
-    }
+    supported_models = {"SEN66", "SEN69C"}
 
-    # Prüfen, ob erwartete Messgrössen fehlen.
-    if model in required_measurements:
-        missing = required_measurements[model] - values.keys()
-
-        for code in sorted(missing):
-            errors.append(f"Messgrösse fehlt: {code}")
-
-    # Unbekannte Modelle nicht stillschweigend akzeptieren.
-    elif model is not None:
+    # Unbekannte Sensormodelle nicht akzeptieren.
+    if model is not None and model not in supported_models:
         errors.append(f"Unbekanntes Sensormodell: {model}")
 
-    # Alle vorhandenen Werte prüfen.
+    # Alle übermittelten Messwerte prüfen.
     for code, value in values.items():
         if code not in LIMITS:
             errors.append(f"Unbekannte Messgrösse: {code}")
             continue
 
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-        ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             errors.append(f"Messwert ist keine Zahl: {code}")
             continue
 
@@ -153,6 +110,7 @@ def validate_measurements(values, model=None):
 
 
 
+
 def init_queue():
     """Erstellt oder erweitert die lokale SQLite-Warteschlange."""
 
@@ -167,7 +125,7 @@ def init_queue():
                 errors_json TEXT NOT NULL,
                 sensor_model TEXT NOT NULL DEFAULT 'SEN66',
                 device_uid TEXT,
-        message_id TEXT
+            message_id TEXT
             )
         """)
 
@@ -190,8 +148,8 @@ def init_queue():
                 ADD COLUMN device_uid TEXT
             """)
 
-    if "message_id" not in columns:            
-        connection.execute("""
+        if "message_id" not in columns:            
+            connection.execute("""
                 ALTER TABLE pending_measurements
                 ADD COLUMN message_id TEXT
             """)
@@ -489,7 +447,7 @@ def deliver_pending():
                     errors_json,
                     sensor_model,
                     device_uid,
-		    message_id
+            message_id
                 FROM pending_measurements
                 ORDER BY id
                 LIMIT 1
@@ -578,7 +536,7 @@ def deliver_pending():
                         values,
                         row["timestamp"],
                         model,
-			message_id=message_id,
+            message_id=message_id,
                     )
 
                     update_device_status(
