@@ -166,7 +166,8 @@ def init_queue():
                 values_json TEXT NOT NULL,
                 errors_json TEXT NOT NULL,
                 sensor_model TEXT NOT NULL DEFAULT 'SEN66',
-                device_uid TEXT
+                device_uid TEXT,
+        message_id TEXT
             )
         """)
 
@@ -189,7 +190,11 @@ def init_queue():
                 ADD COLUMN device_uid TEXT
             """)
 
-
+    if "message_id" not in columns:            
+        connection.execute("""
+                ALTER TABLE pending_measurements
+                ADD COLUMN message_id TEXT
+            """)
 
 
 def enqueue_measurement(
@@ -198,29 +203,45 @@ def enqueue_measurement(
     values,
     errors,
     device_uid=None,
+    message_id=None,
 ):
-    """Speichert einen Messzyklus lokal."""
+    """Speichert einen Messzyklus lokal, ohne Queue-Duplikate."""
 
     with sqlite3.connect(QUEUE_FILE) as connection:
+        if message_id:
+            existing = connection.execute("""
+                SELECT 1
+                FROM pending_measurements
+                WHERE device_uid = ?
+                  AND message_id = ?
+                LIMIT 1
+            """, (device_uid, message_id)).fetchone()
+
+            if existing:
+                print(
+                    f"Doppelte Nachricht ignoriert: {message_id}",
+                    flush=True,
+                )
+                return
+
         connection.execute("""
             INSERT INTO pending_measurements (
                 timestamp,
                 values_json,
                 errors_json,
                 sensor_model,
-                device_uid
+                device_uid,
+                message_id
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
             timestamp.isoformat(),
             json.dumps(values, allow_nan=False),
             json.dumps(errors),
             model,
             device_uid,
+            message_id,
         ))
-
-
-
 
 def get_database_config(connection, device_uid, model):
     """Liest Sensor-ID, Geräte-ID und Messgrössen-IDs."""
@@ -395,6 +416,7 @@ def save_rejected(
 
 
 
+
 def save_valid(
     connection,
     sensor_id,
@@ -402,6 +424,7 @@ def save_valid(
     values,
     timestamp,
     model,
+    message_id=None,
 ):
     """Speichert gültige Messwerte in PostgreSQL."""
 
@@ -413,6 +436,12 @@ def save_valid(
                 raise ValueError(
                     f"Messgrösse fehlt in measurement_types: {code}"
                 )
+
+            source_message_id = (
+                f"{message_id}:{code}"
+                if message_id
+                else f"collector:{model}:{timestamp}:{code}"
+            )
 
             cursor.execute("""
                 INSERT INTO measurements (
@@ -433,8 +462,9 @@ def save_valid(
                 type_ids[code],
                 measured_at,
                 value,
-                f"collector:{model}:{timestamp}:{code}",
+                source_message_id,
             ))
+
 
 
 def deliver_pending():
@@ -458,7 +488,8 @@ def deliver_pending():
                     values_json,
                     errors_json,
                     sensor_model,
-                    device_uid
+                    device_uid,
+		    message_id
                 FROM pending_measurements
                 ORDER BY id
                 LIMIT 1
@@ -474,6 +505,7 @@ def deliver_pending():
             errors = json.loads(row["errors_json"])
             model = row["sensor_model"]
             device_uid = row["device_uid"]
+            message_id = row["message_id"]
             measured_at = datetime.fromisoformat(row["timestamp"])
 
             if not isinstance(values, dict):
@@ -546,6 +578,7 @@ def deliver_pending():
                         values,
                         row["timestamp"],
                         model,
+			message_id=message_id,
                     )
 
                     update_device_status(

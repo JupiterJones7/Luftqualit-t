@@ -1,0 +1,22 @@
+{
+  "device_uid": "SIM-SEN66-001",
+  "sensor_model": "SEN66",
+  "measured_at": "2026-10-21T07:48:08.970022+00:00",
+  "message_id": "file-test-sen66-001",
+  "measurements": {
+    "pm1_mass": 1.1,
+    "pm25_mass": 2.2,
+    "pm4_mass": 2.5,
+    "pm10_mass": 3.0,
+    "pm05_number": 10.0,
+    "pm1_number": 12.0,
+    "pm25_number": 15.0,
+    "pm4_number": 17.0,
+    "pm10_number": 20.0,
+    "co2": 500.0,
+    "temperature": 22.0,
+    "humidity": 45.0,
+    "voc_index": 100.0,
+    "nox_index": 1.0
+  }
+}

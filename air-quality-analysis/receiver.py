@@ -6,10 +6,15 @@ from urllib import request
 
 import uvicorn
 from dotenv import load_dotenv
+from pathlib import Path
+from collector import init_queue, enqueue_measurement, validate_measurements, deliver_pending
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
+init_queue()
 
 API_KEY = os.getenv("INGEST_API_KEY")
 
@@ -96,6 +101,25 @@ def receive_measurements(
         print(f"  {code}: {value}", flush=True)
 
     print("=" * 50, flush=True)
+
+    errors = validate_measurements(
+        message.measurements,
+        message.sensor_model,
+    )
+
+    enqueue_measurement(
+        timestamp=message.measured_at,
+        model=message.sensor_model,
+        values=message.measurements,
+        errors=errors,
+        device_uid=message.device_uid,
+        message_id=message.message_id,
+    )
+
+    try:
+        deliver_pending()
+    except Exception as exc:
+        print(f"Automatische Übertragung fehlgeschlagen: {exc}", flush=True)
 
     return {
         "status": "received",
