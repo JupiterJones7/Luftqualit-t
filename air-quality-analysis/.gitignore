@@ -1,35 +1,66 @@
+
+# Environment variables and secrets
 .env
 .env.*
+!.env.example
 
+# Private keys and certificates
 *.pem
 *.key
+*.p12
+*.pfx
 
-pycache/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-
-venv/
+# Python virtual environments
 .venv/
-**/.venv/
+venv/
 env/
 
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Build and distribution
+build/
+dist/
+.eggs/
+wheels/
+
+# Python testing and linting
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+
+# Local databases and runtime files
 *.sqlite
 *.sqlite3
 *.db
+*.pid
+data/*.sqlite3
+data/*.pid
+
+# Generated output files
+output/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# IDE and editor files
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Operating system files
 .DS_Store
 Thumbs.db
 
+# Log files
 *.log
 
-data/*.sqlite3
-output/
-**/output/
